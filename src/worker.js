@@ -1,81 +1,110 @@
-/**
- * Cloudflare Worker Reverse Proxy for Multiple Services
- *
- * Request format:
- *    https://your-worker-domain/{service}/{rest-of-path}?{query}
- *
- * Supported services (case-insensitive):
- *   - openai
- *   - anthropic
- *   - azure_openai
- *   - google_vertexai
- *   - google_genai
- *   - bedrock
- *   - bedrock_converse
- *   - cohere
- *   - fireworks
- *   - together
- *   - mistralai
- *   - huggingface
- *   - groq
- *   - google_anthropic_vertex
- *   - deepseek
- *   - ibm
- *   - nvidia
- *   - xai
- *
- * For each service, ensure you configure the proper API base URL.
- */
-
 import {SERVICE_API_BASE} from './config.js';
 
+const buildTargetUrl = (service, originalUrl) => {
+    const baseUrl = SERVICE_API_BASE[service];
+    const segments = originalUrl.pathname.split('/').filter(Boolean);
+    const remainingPath = '/' + segments.slice(1).join('/');
+    const targetUrl = new URL(baseUrl + remainingPath + originalUrl.search);
+    console.log('Constructed target URL:', targetUrl.toString());
+    return targetUrl;
+};
 
-async function handleRequest(request) {
+const handleRequest = async (request) => {
     try {
-        // Parse the incoming URL
-        const url = new URL(request.url);
-        // Split pathname into segments (ignore empty segments)
-        const segments = url.pathname.split('/').filter(segment => segment);
+        console.log('Incoming request:', request.method, request.url);
 
-        // Expect at least two segments: service and at least one path segment
+        const originalUrl = new URL(request.url);
+        console.log('Parsed URL:', originalUrl);
+
+        const segments = originalUrl.pathname.split('/').filter(Boolean);
+        console.log('Path segments:', segments);
+
+        // Debug endpoint: /debug returns the Cloudflare request properties.
+        if (segments[0] === 'debug') {
+            console.log('Debug endpoint hit');
+            return new Response(JSON.stringify(request.cf, null, 2), {
+                headers: {'Content-Type': 'application/json'},
+            });
+        }
+
+        // Debug endpoint: /debug-ip returns outgoing IP info.
+        if (segments[0] === 'debug-ip') {
+            console.log('Debug IP endpoint hit');
+            const ipinfoResponse = await fetch('https://ipinfo.io/json');
+            const ipinfoData = await ipinfoResponse.json();
+            return new Response(JSON.stringify(ipinfoData, null, 2), {
+                headers: {'Content-Type': 'application/json'},
+            });
+        }
+
+        // Ensure the URL is in the expected /{service}/{path} format.
         if (segments.length < 2) {
-            return new Response("Invalid URL format. Expected /{service}/{path}", {status: 400});
+            console.error('Invalid URL format. Expected /{service}/{path}');
+            return new Response('Invalid URL format. Expected /{service}/{path}', {status: 400});
         }
 
-        // Extract service identifier (first segment, case-insensitive)
+        // Normalize the service name and check if it's supported.
         const service = segments[0].toLowerCase();
-
-        // Check if service is supported
-        if (!(service in SERVICE_API_BASE)) {
-            return new Response("Service not supported", {status: 400});
+        if (!SERVICE_API_BASE.hasOwnProperty(service)) {
+            console.error('Service not supported:', service);
+            return new Response('Service not supported', {status: 400});
         }
 
-        // Construct the target URL using the service base and remaining path & query
-        const baseUrl = SERVICE_API_BASE[service];
-        const remainingPath = "/" + segments.slice(1).join('/');
-        const targetUrl = new URL(baseUrl + remainingPath + url.search);
+        // Construct the target URL using the service's base URL.
+        const targetUrl = buildTargetUrl(service, originalUrl);
 
-        // Prepare request options, preserving method, headers, and body (if applicable)
+        // Clone and clean the headers to remove IP and connection related fields.
+        const headers = new Headers(request.headers);
+        // console.log('Original Headers:', Array.from(headers.entries()));
+
+        headers.delete('x-forwarded-for');
+        headers.delete('cf-connecting-ip');
+        headers.delete('x-real-ip');
+        headers.delete('cf-visitor');
+        headers.delete('cf-ipcountry');
+        headers.delete('cf-ray');
+        headers.delete('forwarded');
+
+        // console.log('Modified Headers:', Array.from(headers.entries()));
+
         const init = {
             method: request.method,
-            // Clone the headers. You may choose to filter out headers (e.g., cookies) if needed.
-            headers: request.headers,
-            // Only include a body for methods that allow it
-            body: (request.method !== "GET" && request.method !== "HEAD") ? request.body : null,
+            headers,
+            body: (request.method !== 'GET' && request.method !== 'HEAD') ? request.body : null,
             redirect: 'follow'
         };
 
-        // Create a new request object for the proxy call
+        // Forward the request to the target API.
         const proxyRequest = new Request(targetUrl.toString(), init);
+        // console.log('Forwarding request to:', targetUrl.toString());
+        const response = await fetch(proxyRequest);
 
-        // Forward the request to the selected API base and return its response
-        return await fetch(proxyRequest);
+        // Clone and log the response body without consuming the original stream.
+        const clonedResponse = response.clone();
+        const responseBodyText = await clonedResponse.text();
+
+        try {
+            const responseLines = responseBodyText.split('\n');
+            responseLines.forEach(line => {
+                if (line.startsWith('data:')) {
+                    const jsonPart = line.substring(6).trim();
+                    const parsed = JSON.parse(jsonPart);
+                    if (parsed.choices && parsed.choices[0].delta) {
+                        console.log('Extracted Content:', parsed.choices[0].delta.content || '');
+                    }
+                }
+            });
+        } catch (parseError) {
+            console.error('Error parsing response body:', parseError);
+        }
+
+        return response;
     } catch (error) {
-        return new Response("Internal Error: " + error.message, {status: 500});
+        console.error('Internal Error:', error);
+        return new Response(`Internal Error: ${error.message}`, {status: 500});
     }
-}
+};
 
-// Listen to fetch events and handle them with our proxy logic
 addEventListener('fetch', event => {
     event.respondWith(handleRequest(event.request));
 });
