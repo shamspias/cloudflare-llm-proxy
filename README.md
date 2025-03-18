@@ -76,7 +76,7 @@ upload.format = "modules"
 ### 4️⃣ Deploy to Cloudflare Workers
 Run:
 ```sh
-wrangler publish
+wrangler deploy
 ```
 After deployment, your proxy will be available at:
 ```plaintext
