@@ -1,0 +1,22 @@
+# Node modules and dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+yarn.lock
+
+# Cloudflare Wrangler files
+.wrangler/
+wrangler.toml
+
+# Logs and cache
+.DS_Store
+*.log
+.cache/
+*.bak
+
+# Environment & Secrets
+.env
+.env.local
+.env.production
+.env.development
